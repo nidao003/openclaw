@@ -1,0 +1,56 @@
+name: 'Sync with OpenClaw Upstream'
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    
+    steps:
+      # 步骤1：检出当前仓库
+      # 使用刚刚设置的 UPDATE，赋予它修改 Workflow 文件的权限
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.UPDATE }}
+          
+      # 步骤2：配置Git
+      - name: Configure Git
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git config --global pull.rebase false
+          
+      # 步骤3：添加上游仓库并同步
+      - name: Sync from OpenClaw upstream
+        run: |
+          git remote add upstream https://github.com/openclaw/openclaw.git
+          
+          echo "正在获取上游仓库更新..."
+          git fetch upstream main
+          
+          echo "正在合并到本地分支..."
+          git checkout main
+          
+          if git merge upstream/main --no-edit --no-ff; then
+            echo "✅ 合并成功，推送更新..."
+            
+            # 使用 Token 重新设置 origin URL，确保有权限推送 workflows 文件夹的修改
+            # 格式：https://oauth2:TOKEN@github.com/用户名/仓库名.git
+            git remote set-url origin https://oauth2:${{ secrets.ACTION_TOKEN }}@github.com/${{ github.repository }}.git
+            
+            if git push origin main; then
+              echo "🎉 同步完成！Fork已更新到最新版本"
+            else
+              echo "❌ 推送失败，请检查 ACTION_TOKEN 是否配置正确"
+              exit 1
+            fi
+          else
+            echo "⚠️ 合并发生冲突，需要手动处理"
+            git merge --abort
+            exit 1
+          fi
