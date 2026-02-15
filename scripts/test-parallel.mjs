@@ -3,9 +3,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const pnpm = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+// On Windows, `.cmd` launchers can fail with `spawn EINVAL` when invoked without a shell
+// (especially under GitHub Actions + Git Bash). Use `shell: true` and let the shell resolve pnpm.
+const pnpm = "pnpm";
 
-const unitIsolatedFiles = [
+const unitIsolatedFilesRaw = [
   "src/plugins/loader.test.ts",
   "src/plugins/tools.optional.test.ts",
   "src/agents/session-tool-result-guard.tool-result-persist-hook.test.ts",
@@ -28,6 +30,7 @@ const unitIsolatedFiles = [
   "src/browser/server-context.remote-tab-ops.test.ts",
   "src/browser/server-context.ensure-tab-available.prefers-last-target.test.ts",
 ];
+const unitIsolatedFiles = unitIsolatedFilesRaw.filter((file) => fs.existsSync(file));
 
 const children = new Set();
 const isCI = process.env.CI === "true" || process.env.GITHUB_ACTIONS === "true";
@@ -93,7 +96,9 @@ const runs = [
       "run",
       "--config",
       "vitest.gateway.config.ts",
-      ...(useVmForks ? ["--pool=vmForks"] : []),
+      // Gateway tests are sensitive to vmForks behavior (global state + env stubs).
+      // Keep them on process forks for determinism even when other suites use vmForks.
+      "--pool=forks",
     ],
   },
 ];
@@ -122,8 +127,9 @@ const parallelRuns = keepGatewaySerial ? runs.filter((entry) => entry.name !== "
 const serialRuns = keepGatewaySerial ? runs.filter((entry) => entry.name === "gateway") : [];
 const localWorkers = Math.max(4, Math.min(16, os.cpus().length));
 const defaultUnitWorkers = localWorkers;
-const defaultExtensionsWorkers = Math.max(1, Math.min(4, Math.floor(localWorkers / 4)));
-const defaultGatewayWorkers = Math.max(1, Math.min(4, localWorkers));
+// Local perf: extensions tend to be the critical path under parallel vitest runs; give them more headroom.
+const defaultExtensionsWorkers = Math.max(1, Math.min(6, Math.floor(localWorkers / 2)));
+const defaultGatewayWorkers = Math.max(1, Math.min(2, Math.floor(localWorkers / 4)));
 
 // Keep worker counts predictable for local runs; trim macOS CI workers to avoid worker crashes/OOM.
 // In CI on linux/windows, prefer Vitest defaults to avoid cross-test interference from lower worker counts.
@@ -138,7 +144,8 @@ const maxWorkersForRun = (name) => {
     return 1;
   }
   if (name === "unit-isolated") {
-    return 1;
+    // Local: allow a bit of parallelism while keeping this run stable.
+    return Math.min(4, localWorkers);
   }
   if (name === "extensions") {
     return defaultExtensionsWorkers;
@@ -215,12 +222,22 @@ const runOnce = (entry, extraArgs = []) =>
       (acc, flag) => (acc.includes(flag) ? acc : `${acc} ${flag}`.trim()),
       nodeOptions,
     );
-    const child = spawn(pnpm, args, {
-      stdio: "inherit",
-      env: { ...process.env, VITEST_GROUP: entry.name, NODE_OPTIONS: nextNodeOptions },
-      shell: process.platform === "win32",
-    });
+    let child;
+    try {
+      child = spawn(pnpm, args, {
+        stdio: "inherit",
+        env: { ...process.env, VITEST_GROUP: entry.name, NODE_OPTIONS: nextNodeOptions },
+        shell: isWindows,
+      });
+    } catch (err) {
+      console.error(`[test-parallel] spawn failed: ${String(err)}`);
+      resolve(1);
+      return;
+    }
     children.add(child);
+    child.on("error", (err) => {
+      console.error(`[test-parallel] child error: ${String(err)}`);
+    });
     child.on("exit", (code, signal) => {
       children.delete(child);
       resolve(code ?? (signal ? 1 : 0));
@@ -269,12 +286,22 @@ if (passthroughArgs.length > 0) {
     nodeOptions,
   );
   const code = await new Promise((resolve) => {
-    const child = spawn(pnpm, args, {
-      stdio: "inherit",
-      env: { ...process.env, NODE_OPTIONS: nextNodeOptions },
-      shell: process.platform === "win32",
-    });
+    let child;
+    try {
+      child = spawn(pnpm, args, {
+        stdio: "inherit",
+        env: { ...process.env, NODE_OPTIONS: nextNodeOptions },
+        shell: isWindows,
+      });
+    } catch (err) {
+      console.error(`[test-parallel] spawn failed: ${String(err)}`);
+      resolve(1);
+      return;
+    }
     children.add(child);
+    child.on("error", (err) => {
+      console.error(`[test-parallel] child error: ${String(err)}`);
+    });
     child.on("exit", (exitCode, signal) => {
       children.delete(child);
       resolve(exitCode ?? (signal ? 1 : 0));
