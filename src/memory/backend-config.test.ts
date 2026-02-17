@@ -1,7 +1,7 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import type { OpenClawConfig } from "../config/config.js";
 import { resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
+import type { OpenClawConfig } from "../config/config.js";
 import { resolveMemoryBackendConfig } from "./backend-config.js";
 
 describe("resolveMemoryBackendConfig", () => {
@@ -96,8 +96,12 @@ describe("resolveMemoryBackendConfig", () => {
     } as OpenClawConfig;
     const mainResolved = resolveMemoryBackendConfig({ cfg, agentId: "main" });
     const devResolved = resolveMemoryBackendConfig({ cfg, agentId: "dev" });
-    const mainNames = new Set((mainResolved.qmd?.collections ?? []).map((collection) => collection.name));
-    const devNames = new Set((devResolved.qmd?.collections ?? []).map((collection) => collection.name));
+    const mainNames = new Set(
+      (mainResolved.qmd?.collections ?? []).map((collection) => collection.name),
+    );
+    const devNames = new Set(
+      (devResolved.qmd?.collections ?? []).map((collection) => collection.name),
+    );
     expect(mainNames.has("memory-dir-main")).toBe(true);
     expect(devNames.has("memory-dir-dev")).toBe(true);
     expect(mainNames.has("workspace-main")).toBe(true);
